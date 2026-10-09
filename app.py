@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="广告数据多维透视看板", layout="wide")
 
 st.title("📊 广告数据多维透视与看板")
-st.caption("🚀 UI全面优化：每个板块右侧内置【📋 复制表格数据】按钮，一键快速粘贴至 Excel/文档")
+st.caption("🚀 全层级透视版：包含平台/账户/目标/优化方式/出价/广告类型全量交叉拆分，支持直接复制至 Excel")
 
 # 性能优化：缓存表格读取
 @st.cache_data(show_spinner="正在加载解析表格数据...")
@@ -28,7 +28,7 @@ def highlight_d0_rate(val):
         pass
     return ''
 
-# ---------------- ✨ 图二同款：标题 + 右侧【复制表格数据】按钮布局 ----------------
+# 标题 + 右侧【复制表格数据】按钮布局渲染
 def render_section_header_and_table(df_to_render, title_text, target_col='DO 达标率', key_prefix="sec"):
     col_title, col_btn = st.columns([0.78, 0.22])
     
@@ -36,7 +36,6 @@ def render_section_header_and_table(df_to_render, title_text, target_col='DO 达
         st.markdown(f"#### {title_text}")
         
     with col_btn:
-        # TSV 格式最适合直接粘贴至 Excel
         tsv_data = df_to_render.to_csv(sep='\t', index=False)
         st.download_button(
             label="📋 复制表格数据",
@@ -47,7 +46,6 @@ def render_section_header_and_table(df_to_render, title_text, target_col='DO 达
             use_container_width=True
         )
 
-    # 渲染高亮表格
     try:
         styled = df_to_render.style.map(highlight_d0_rate, subset=[target_col])
     except AttributeError:
@@ -83,6 +81,7 @@ if uploaded_file is not None:
     col_gender = get_col(['男女频', '频'])
     col_id = get_col(['推广剧目/书籍短ID', '推广剧目/书籍id', '短id', '剧目id', '书籍id', 'id'])
     
+    col_account = get_col(['账户名称', '账户', '账号名称', '账号', 'account'])
     col_pixel = get_col(['pixel名称', 'pixel', '像素名称', '像素'])
     col_material = get_col(['素材名称', '素材', 'material', '视频名称', '创意名称'])
     col_platform = get_col(['投放平台', '平台', 'channel'])
@@ -148,7 +147,7 @@ if uploaded_file is not None:
     st.sidebar.markdown("---")
 
     # 其它维度切片
-    slicer_cols = [c for c in [col_optimizer, col_platform, col_target, col_pixel, col_type, col_gender, col_dub] if c is not None]
+    slicer_cols = [c for c in [col_account, col_optimizer, col_platform, col_target, col_pixel, col_type, col_gender, col_dub] if c is not None]
     for scol in slicer_cols:
         opts = filtered_df[scol].astype(str).unique().tolist()
         selected = st.sidebar.multiselect(f"筛选 {scol}", options=opts, default=opts)
@@ -256,7 +255,10 @@ if uploaded_file is not None:
         return passed[[group_col, '花费 ($)', 'DO 达标率']]
 
     # 辅助函数：处理近 3 天爆款素材过滤与计算
-    def process_recent_good_materials(df_source, material_column, threshold=80.0):
+    def process_recent_good_materials(df_source, material_column, threshold=80.0, max_spend=None):
+        if df_source.empty:
+            return pd.DataFrame()
+            
         mat_pivot = df_source.groupby([material_column], as_index=False).agg({
             '_spend': 'sum',
             '_d0_rev': 'sum',
@@ -278,8 +280,18 @@ if uploaded_file is not None:
         mat_pivot['付费率'] = [ f"{(p/a*100):.2f}%" if a > 0 else "0.00%" for p, a in zip(pay_r, act_r) ]
         mat_pivot['arppu'] = [ f"{(r/p):.2f}" if p > 0 else "#DIV/0!" for r, p in zip(rev_r, pay_r) ]
 
-        good_mats = mat_pivot[mat_pivot['DO达标数值'] >= threshold].sort_values(by='_spend', ascending=False)
-        return good_mats
+        good_mats = mat_pivot[mat_pivot['DO达标数值'] >= threshold]
+        
+        if max_spend is not None:
+            good_mats = good_mats[good_mats['_spend'] < max_spend]
+
+        return good_mats.sort_values(by='_spend', ascending=False)
+
+    # 📌 投放平台 x 账户 数据透视板块
+    if col_platform and col_account:
+        plat_acc_df, *_ = build_summary_pivot(filtered_df, [col_platform, col_account])
+        render_section_header_and_table(plat_acc_df, "📌 投放平台 × 账户 成效透视明细", key_prefix="s_acc")
+        st.markdown("---")
 
     # ==================== 🎯 【单剧集/短ID 深度透视板块】 ====================
     if selected_ids and len(selected_ids) == 1:
@@ -325,6 +337,12 @@ if uploaded_file is not None:
             deep_df, *_ = build_summary_pivot(filtered_df, deep_pivot_cols)
             render_section_header_and_table(deep_df, "📌 6. 广告层级细分全量深度透视", key_prefix="s6")
 
+        # 🔥【新增 6.2】：广告层级全量多维细分透视 (平台x账户x目标x方式x出价x类型)
+        full_deep_cols = [c for c in [col_platform, col_account, col_target, col_opt_mode, col_bid, col_ad_type] if c]
+        if len(full_deep_cols) >= 3:
+            full_deep_df, *_ = build_summary_pivot(filtered_df, full_deep_cols)
+            render_section_header_and_table(full_deep_df, "📌 6.2 广告层级全量多维细分透视 (平台×账户×目标×方式×出价×类型)", key_prefix="s6_2")
+
         # 7. 素材测试全量透视与素材测出率统计
         mat_total_count = 0
         mat_passed_count = 0
@@ -357,7 +375,7 @@ if uploaded_file is not None:
             sc2.metric("测出素材数 (D0达标率≥70%)", f"{mat_passed_count} 条")
             sc3.metric("🎯 素材测出率", mat_pass_rate_str)
 
-            # 8. 近 3 天优质爆款素材（三方向拆分）
+            # 8. 近 3 天优质爆款素材
             st.markdown("#### 🔥 8. 近 3 天优质爆款素材（DO 达标率 ≥ 80%，按方向分类方便直接复制上计划）")
             
             recent_3d_df = filtered_df.copy()
@@ -372,14 +390,16 @@ if uploaded_file is not None:
                 fb_df = recent_3d_df[recent_3d_df[col_platform].astype(str).str.lower().str.contains('fb|facebook')]
                 tt_df = recent_3d_df[recent_3d_df[col_platform].astype(str).str.lower().str.contains('tt|tiktok')]
 
-            good_all = process_recent_good_materials(recent_3d_df, col_material, 80.0)
-            good_fb = process_recent_good_materials(fb_df, col_material, 80.0) if not fb_df.empty else pd.DataFrame()
-            good_tt = process_recent_good_materials(tt_df, col_material, 80.0) if not tt_df.empty else pd.DataFrame()
+            good_all = process_recent_good_materials(recent_3d_df, col_material, threshold=80.0)
+            good_fb = process_recent_good_materials(fb_df, col_material, threshold=80.0)
+            good_tt = process_recent_good_materials(tt_df, col_material, threshold=80.0)
+            good_low_spend = process_recent_good_materials(recent_3d_df, col_material, threshold=80.0, max_spend=10.0)
 
-            tab_all, tab_fb, tab_tt = st.tabs([
+            tab_all, tab_fb, tab_tt, tab_low = st.tabs([
                 f"🌐 全平台汇总爆款 ({len(good_all)}条)", 
                 f"🔵 FB平台专属爆款 ({len(good_fb)}条)", 
-                f"🎵 TT平台专属爆款 ({len(good_tt)}条)"
+                f"🎵 TT平台专属爆款 ({len(good_tt)}条)",
+                f"🌱 低消耗潜质复测素材 [花费<$10] ({len(good_low_spend)}条)"
             ])
 
             with tab_all:
@@ -411,6 +431,16 @@ if uploaded_file is not None:
                     render_section_header_and_table(disp_tt[[col_material, '花费', 'DO 达标率', 'ROAS', 'CPI', 'CPP', '付费率', 'arppu']], "🎵 TT专属爆款素材列表", key_prefix="m_tt")
                 else:
                     st.info("近 3 天 TT 平台暂无独立达标率 ≥ 80% 的素材。")
+
+            with tab_low:
+                if not good_low_spend.empty:
+                    st.warning(f"🌱【低消耗高达标】双平台汇总花费 < $10 且达标率 ≥ 80% 的潜在爆款（适合重新建计划重点复测）：")
+                    st.code("\n".join(good_low_spend[col_material].tolist()), language="text")
+                    disp_low = good_low_spend.copy()
+                    disp_low['花费'] = [f"{s:,.2f}" for s in disp_low['_spend'].values]
+                    render_section_header_and_table(disp_low[[col_material, '花费', 'DO 达标率', 'ROAS', 'CPI', 'CPP', '付费率', 'arppu']], "🌱 低消耗达标潜力素材表", key_prefix="m_low")
+                else:
+                    st.info("近 3 天暂无【双平台花费 < $10 且达标率 ≥ 80%】的潜在素材。")
 
         # ==================== 🎯 9. D0 ≥ 70% 达标优质资产汇总与复测策略报告 ====================
         st.markdown("---")
@@ -461,7 +491,7 @@ if uploaded_file is not None:
 【二、 后续复测与放量动作指南】
 1. 🎯 组合搭建复测计划:
    - 将上一步盘点出的【达标平台 + 达标目标 + 达标优化方式】作为黄金组合基础设置。
-   - 优先将【测出素材】重新组装到该黄金组合账户中上新计划，初始出价建议参考历史均值 CPP / CPI。
+   - 优先将【测出素材】及【花费<$10的高达标低耗潜质素材】重新组装到该黄金组合账户中上新计划。
 
 2. 🚀 素材衍生与二次扩量:
    - 对 D0≥70% 的 {len(mats_top_list)} 条测出素材，提取前 3 秒黄金 Hook 与高转化片段，制作 3-5 支微剪/调色/换音衍生视频做二次复测。
