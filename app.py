@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="广告数据多维透视看板", layout="wide")
 
 st.title("📊 广告数据多维透视与看板")
-st.caption("🚀 挑剧与止损双向透视版：包含优化师选剧一览表及连续多日低达标率（连续2天<60%/3天<73%/4天<78%）预警弃剧板块")
+st.caption("🚀 挑剧与止损双向透视版：含优化师选剧一览表及连续多日低达标预警止损板块")
 
 # 性能优化：缓存表格读取
 @st.cache_data(show_spinner="正在加载解析表格数据...")
@@ -24,11 +24,11 @@ def highlight_d0_rate(val):
             num = float(val.replace('%', ''))
             if num >= 80.0:
                 return 'color: #dc2626; font-weight: bold; background-color: #fee2e2;'
-    except:
+    except Exception:
         pass
     return ''
 
-# 标题 + 右侧【复制表格数据】按钮布局渲染
+# 标题 + 右侧【复制表格数据】按钮布局渲染（带严谨的 KeyError 防摔容错）
 def render_section_header_and_table(df_to_render, title_text, target_col='DO 达标率', key_prefix="sec"):
     col_title, col_btn = st.columns([0.78, 0.22])
     
@@ -46,11 +46,25 @@ def render_section_header_and_table(df_to_render, title_text, target_col='DO 达
             use_container_width=True
         )
 
+    # 自动识别要渲染高亮列是 'DO 达标率' 还是 'D0 达标率'
+    actual_target_col = None
+    for candidate in [target_col, 'DO 达标率', 'D0 达标率', 'DO达标率', 'D0达标率', '剧目测出率']:
+        if candidate in df_to_render.columns:
+            actual_target_col = candidate
+            break
+
     try:
-        styled = df_to_render.style.map(highlight_d0_rate, subset=[target_col])
-    except AttributeError:
-        styled = df_to_render.style.applymap(highlight_d0_rate, subset=[target_col])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
+        if actual_target_col:
+            try:
+                styled = df_to_render.style.map(highlight_d0_rate, subset=[actual_target_col])
+            except AttributeError:
+                styled = df_to_render.style.applymap(highlight_d0_rate, subset=[actual_target_col])
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+        else:
+            st.dataframe(df_to_render, use_container_width=True, hide_index=True)
+    except Exception:
+        # 万一报错直接输出原数据框，保障程序绝对不崩
+        st.dataframe(df_to_render, use_container_width=True, hide_index=True)
 
 # 1. 文件上传入口
 uploaded_file = st.file_uploader("📂 拖入或选择你的 Excel / CSV 表格文件", type=["xlsx", "xls", "csv"])
