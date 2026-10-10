@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="广告数据多维透视看板", layout="wide")
 
 st.title("📊 广告数据多维透视与看板")
-st.caption("🚀 挑剧与止损双向透视版：新增连续多日低达标率（连续2天<60% / 3天<73% / 4天<78%）预警弃剧板块")
+st.caption("🚀 挑剧与止损双向透视版：包含优化师选剧一览表及连续多日低达标率（连续2天<60%/3天<73%/4天<78%）预警弃剧板块")
 
 # 性能优化：缓存表格读取
 @st.cache_data(show_spinner="正在加载解析表格数据...")
@@ -350,65 +350,64 @@ if uploaded_file is not None:
                 st.info(f"优化师 {selected_opt_for_drama} 暂无超越个人大盘或 ≥ 80% 达标率的剧目。")
         st.markdown("---")
 
-    # ==================== ⚠️ 【新增】：连续多日低达标预警与止损/弃剧透视板块 ====================
+    # ==================== ⚠️ 连续多日低达标预警与止损/弃剧透视板块 ====================
     if col_id and col_date and '_dt' in filtered_df.columns:
         st.markdown("### ⚠️ 持续低效/衰退剧目预警止损明细 (满足连续2天<60% 或 连续3天<73% 或 连续4天<78%)")
         
-        # 按 短ID + 日期 维度分组聚合每日数据
-        daily_drama_df = filtered_df.groupby([col_id, '_dt'], as_index=False).agg({
-            '_spend': 'sum',
-            '_d0_rev': 'sum',
-            '_d0_target': 'sum'
-        })
-        daily_drama_df['daily_d0_rate'] = daily_drama_df.apply(lambda r: (r['_d0_rev'] / r['_d0_target'] * 100) if r['_d0_target'] > 0 else 0, axis=1)
-        daily_drama_df = daily_drama_df.sort_values(by=[col_id, '_dt'], ascending=[True, True])
+        valid_date_df = filtered_df.dropna(subset=['_dt']).copy()
         
-        warning_ids = set()
-        
-        for dram_id, grp in daily_drama_df.groupby(col_id):
-            rates = grp['daily_d0_rate'].tolist()
-            n = len(rates)
+        if not valid_date_df.empty:
+            daily_drama_df = valid_date_df.groupby([col_id, '_dt'], as_index=False).agg({
+                '_spend': 'sum',
+                '_d0_rev': 'sum',
+                '_d0_target': 'sum'
+            })
+            daily_drama_df['daily_d0_rate'] = daily_drama_df.apply(lambda r: (r['_d0_rev'] / r['_d0_target'] * 100) if r['_d0_target'] > 0 else 0.0, axis=1)
+            daily_drama_df = daily_drama_df.sort_values(by=[col_id, '_dt'], ascending=[True, True])
             
-            is_warning = False
+            warning_ids = set()
             
-            # 条件 1：连续 2 天持续低于 60%
-            if n >= 2:
-                for i in range(n - 1):
-                    if rates[i] < 60.0 and rates[i+1] < 60.0:
-                        is_warning = True
-                        break
-            
-            # 条件 2：连续 3 天持续低于 73%
-            if not is_warning and n >= 3:
-                for i in range(n - 2):
-                    if rates[i] < 73.0 and rates[i+1] < 73.0 and rates[i+2] < 73.0:
-                        is_warning = True
-                        break
+            for dram_id, grp in daily_drama_df.groupby(col_id):
+                rates = grp['daily_d0_rate'].tolist()
+                n = len(rates)
+                
+                is_warning = False
+                
+                if n >= 2:
+                    for i in range(n - 1):
+                        if rates[i] < 60.0 and rates[i+1] < 60.0:
+                            is_warning = True
+                            break
+                
+                if not is_warning and n >= 3:
+                    for i in range(n - 2):
+                        if rates[i] < 73.0 and rates[i+1] < 73.0 and rates[i+2] < 73.0:
+                            is_warning = True
+                            break
 
-            # 条件 3：连续 4 天持续低于 78%
-            if not is_warning and n >= 4:
-                for i in range(n - 3):
-                    if rates[i] < 78.0 and rates[i+1] < 78.0 and rates[i+2] < 78.0 and rates[i+3] < 78.0:
-                        is_warning = True
-                        break
-            
-            if is_warning:
-                warning_ids.add(str(dram_id))
+                if not is_warning and n >= 4:
+                    for i in range(n - 3):
+                        if rates[i] < 78.0 and rates[i+1] < 78.0 and rates[i+2] < 78.0 and rates[i+3] < 78.0:
+                            is_warning = True
+                            break
+                
+                if is_warning:
+                    warning_ids.add(str(dram_id))
 
-        if warning_ids:
-            warning_raw = filtered_df[filtered_df[col_id].astype(str).isin(warning_ids)]
-            warning_cols = [c for c in [col_platform, col_optimizer, col_gender, col_cn_name, col_drama_name, col_type, col_dub, col_id] if c]
-            
-            if warning_cols:
-                warning_table_df, *_ = build_summary_pivot(warning_raw, warning_cols)
-                st.warning(f"🚨 共发现 {len(warning_ids)} 部符合低效止损条件的预警剧目，请及时调整关停或止损！")
-                render_section_header_and_table(
-                    warning_table_df, 
-                    "🚨 连续低效/衰退预警剧目全量透视表 (满足连续2天<60% / 3天<73% / 4天<78%)", 
-                    key_prefix="warn_dr_single_table"
-                )
-        else:
-            st.success("🎉 当前筛选范围内暂无符合连续低效（2天<60% / 3天<73% / 4天<78%）的预警剧目，整体大盘健康度良好！")
+            if warning_ids:
+                warning_raw = filtered_df[filtered_df[col_id].astype(str).isin(warning_ids)]
+                warning_cols = [c for c in [col_platform, col_optimizer, col_gender, col_cn_name, col_drama_name, col_type, col_dub, col_id] if c]
+                
+                if warning_cols:
+                    warning_table_df, *_ = build_summary_pivot(warning_raw, warning_cols)
+                    st.warning(f"🚨 共发现 {len(warning_ids)} 部符合低效止损条件的预警剧目，请及时调整关停或止损！")
+                    render_section_header_and_table(
+                        warning_table_df, 
+                        "🚨 连续低效/衰退预警剧目全量透视表 (满足连续2天<60% / 3天<73% / 4天<78%)", 
+                        key_prefix="warn_dr_single_table"
+                    )
+            else:
+                st.success("🎉 当前筛选范围内暂无符合连续低效（2天<60% / 3天<73% / 4天<78%）的预警剧目，整体大盘健康度良好！")
         st.markdown("---")
 
     # ==================== 🎯 【单剧集/短ID 深度透视板块】 ====================
