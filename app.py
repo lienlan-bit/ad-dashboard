@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="广告数据多维透视看板", layout="wide")
 
 st.title("📊 广告数据多维透视与看板")
-st.caption("🚀 全层级透视版：包含平台/账户/目标/优化方式/出价/广告类型全量交叉拆分，支持直接复制至 Excel")
+st.caption("🚀 挑剧与止损双向透视版：新增连续多日低达标率（连续2天<60% / 3天<73% / 4天<78%）预警弃剧板块")
 
 # 性能优化：缓存表格读取
 @st.cache_data(show_spinner="正在加载解析表格数据...")
@@ -81,7 +81,7 @@ if uploaded_file is not None:
     col_gender = get_col(['男女频', '频'])
     col_id = get_col(['推广剧目/书籍短ID', '推广剧目/书籍id', '短id', '剧目id', '书籍id', 'id'])
     
-    col_account = get_col(['账户名称', '账户', '账号名称', '账号', 'account'])
+    col_account = get_col(['投放账户名称', '账户名称', '账户', '账号名称', '账号', 'account'])
     col_pixel = get_col(['pixel名称', 'pixel', '像素名称', '像素'])
     col_material = get_col(['素材名称', '素材', 'material', '视频名称', '创意名称'])
     col_platform = get_col(['投放平台', '平台', 'channel'])
@@ -168,8 +168,11 @@ if uploaded_file is not None:
 
     st.markdown("---")
 
-    # 通用透视计算函数
+    # 树状层级对齐与级联去重透视函数
     def build_summary_pivot(df_input, group_by_cols):
+        if df_input.empty:
+            return pd.DataFrame(), 0, 0, 0, 0, 0, 0, 0
+
         pivot = df_input.groupby(group_by_cols, as_index=False).agg({
             '_spend': 'sum',
             '_d0_rev': 'sum',
@@ -181,7 +184,15 @@ if uploaded_file is not None:
         if len(group_by_cols) == 1:
             pivot = pivot.sort_values(by='_spend', ascending=False)
         else:
-            pivot = pivot.sort_values(by=[group_by_cols[0], '_spend'], ascending=[True, False])
+            for idx in range(len(group_by_cols)):
+                sub_cols = group_by_cols[:idx+1]
+                grp_sum = df_input.groupby(sub_cols)['_spend'].sum().reset_index()
+                grp_sum.rename(columns={'_spend': f'_sp_rank_{idx}'}, inplace=True)
+                pivot = pivot.merge(grp_sum, on=sub_cols, how='left')
+
+            rank_cols = [f'_sp_rank_{i}' for i in range(len(group_by_cols))]
+            pivot = pivot.sort_values(by=rank_cols + ['_spend'], ascending=[False] * (len(rank_cols) + 1))
+            pivot.drop(columns=rank_cols, inplace=True)
 
         sp = pivot['_spend'].values
         rev = pivot['_d0_rev'].values
@@ -231,9 +242,12 @@ if uploaded_file is not None:
         summary_row = pd.DataFrame([summary_data])
 
         if len(group_by_cols) > 1:
-            for col in group_by_cols[:-1]:
-                mask = display_df[col] == display_df[col].shift(1)
-                display_df.loc[mask, col] = ""
+            for idx in range(len(group_by_cols) - 1):
+                col_curr = group_by_cols[idx]
+                parent_cols = group_by_cols[:idx+1]
+                curr_key = display_df[parent_cols].apply(lambda r: "||".join(r), axis=1)
+                mask = curr_key == curr_key.shift(1)
+                display_df.loc[mask, col_curr] = ""
 
         show_cols = group_by_cols + ['花费', 'DO 达标率', 'ROAS', 'CPI', 'CPP', '付费率', 'arppu']
         final_df = pd.concat([display_df[show_cols], summary_row[show_cols]], ignore_index=True)
@@ -281,7 +295,6 @@ if uploaded_file is not None:
         mat_pivot['arppu'] = [ f"{(r/p):.2f}" if p > 0 else "#DIV/0!" for r, p in zip(rev_r, pay_r) ]
 
         good_mats = mat_pivot[mat_pivot['DO达标数值'] >= threshold]
-        
         if max_spend is not None:
             good_mats = good_mats[good_mats['_spend'] < max_spend]
 
@@ -291,6 +304,111 @@ if uploaded_file is not None:
     if col_platform and col_account:
         plat_acc_df, *_ = build_summary_pivot(filtered_df, [col_platform, col_account])
         render_section_header_and_table(plat_acc_df, "📌 投放平台 × 账户 成效透视明细", key_prefix="s_acc")
+        st.markdown("---")
+
+    # ==================== 🎯 优化师高达标/高于大盘剧目全量一览表 ====================
+    if col_optimizer and col_id:
+        st.markdown("### 🎯 优化师高达标/高于个人大盘剧目全量透视（单表整合 平台×男女频×剧集）")
+        
+        opt_list = sorted(filtered_df[col_optimizer].dropna().astype(str).unique().tolist())
+        if opt_list:
+            selected_opt_for_drama = st.selectbox("👤 请选择要分析的优化师：", options=opt_list, index=0)
+            
+            opt_df_single = filtered_df[filtered_df[col_optimizer].astype(str) == selected_opt_for_drama]
+            
+            opt_tot_rev = opt_df_single['_d0_rev'].sum()
+            opt_tot_tar = opt_df_single['_d0_target'].sum()
+            opt_benchmark_d0 = (opt_tot_rev / opt_tot_tar * 100) if opt_tot_tar > 0 else 0.0
+            
+            st.info(f"💡 **{selected_opt_for_drama}** 在当前时间段内的个人大盘总体 D0 达标率为：**{opt_benchmark_d0:.2f}%** (筛选条件：剧目达标率 ≥ {opt_benchmark_d0:.2f}% 或 ≥ 80%)")
+            
+            id_check_cols = [col_id]
+            id_pivot = opt_df_single.groupby(id_check_cols, as_index=False).agg({
+                '_spend': 'sum',
+                '_d0_rev': 'sum',
+                '_d0_target': 'sum'
+            })
+            id_pivot['D0达标数值'] = id_pivot.apply(lambda r: (r['_d0_rev'] / r['_d0_target'] * 100) if r['_d0_target'] > 0 else 0, axis=1)
+            
+            valid_passed_ids = id_pivot[
+                (id_pivot['D0达标数值'] >= opt_benchmark_d0) | 
+                (id_pivot['D0达标数值'] >= 80.0)
+            ][col_id].astype(str).tolist()
+            
+            if valid_passed_ids:
+                opt_passed_raw = opt_df_single[opt_df_single[col_id].astype(str).isin(valid_passed_ids)]
+                opt_full_cols = [c for c in [col_platform, col_gender, col_cn_name, col_drama_name, col_type, col_dub, col_id] if c]
+                
+                if opt_full_cols:
+                    opt_single_table_df, *_ = build_summary_pivot(opt_passed_raw, opt_full_cols)
+                    render_section_header_and_table(
+                        opt_single_table_df, 
+                        f"📌 {selected_opt_for_drama} - 高达标/超大盘剧目全量明细表 (含FB/TT/男女频/配音/短ID)", 
+                        key_prefix="opt_dr_single_table"
+                    )
+            else:
+                st.info(f"优化师 {selected_opt_for_drama} 暂无超越个人大盘或 ≥ 80% 达标率的剧目。")
+        st.markdown("---")
+
+    # ==================== ⚠️ 【新增】：连续多日低达标预警与止损/弃剧透视板块 ====================
+    if col_id and col_date and '_dt' in filtered_df.columns:
+        st.markdown("### ⚠️ 持续低效/衰退剧目预警止损明细 (满足连续2天<60% 或 连续3天<73% 或 连续4天<78%)")
+        
+        # 按 短ID + 日期 维度分组聚合每日数据
+        daily_drama_df = filtered_df.groupby([col_id, '_dt'], as_index=False).agg({
+            '_spend': 'sum',
+            '_d0_rev': 'sum',
+            '_d0_target': 'sum'
+        })
+        daily_drama_df['daily_d0_rate'] = daily_drama_df.apply(lambda r: (r['_d0_rev'] / r['_d0_target'] * 100) if r['_d0_target'] > 0 else 0, axis=1)
+        daily_drama_df = daily_drama_df.sort_values(by=[col_id, '_dt'], ascending=[True, True])
+        
+        warning_ids = set()
+        
+        for dram_id, grp in daily_drama_df.groupby(col_id):
+            rates = grp['daily_d0_rate'].tolist()
+            n = len(rates)
+            
+            is_warning = False
+            
+            # 条件 1：连续 2 天持续低于 60%
+            if n >= 2:
+                for i in range(n - 1):
+                    if rates[i] < 60.0 and rates[i+1] < 60.0:
+                        is_warning = True
+                        break
+            
+            # 条件 2：连续 3 天持续低于 73%
+            if not is_warning and n >= 3:
+                for i in range(n - 2):
+                    if rates[i] < 73.0 and rates[i+1] < 73.0 and rates[i+2] < 73.0:
+                        is_warning = True
+                        break
+
+            # 条件 3：连续 4 天持续低于 78%
+            if not is_warning and n >= 4:
+                for i in range(n - 3):
+                    if rates[i] < 78.0 and rates[i+1] < 78.0 and rates[i+2] < 78.0 and rates[i+3] < 78.0:
+                        is_warning = True
+                        break
+            
+            if is_warning:
+                warning_ids.add(str(dram_id))
+
+        if warning_ids:
+            warning_raw = filtered_df[filtered_df[col_id].astype(str).isin(warning_ids)]
+            warning_cols = [c for c in [col_platform, col_optimizer, col_gender, col_cn_name, col_drama_name, col_type, col_dub, col_id] if c]
+            
+            if warning_cols:
+                warning_table_df, *_ = build_summary_pivot(warning_raw, warning_cols)
+                st.warning(f"🚨 共发现 {len(warning_ids)} 部符合低效止损条件的预警剧目，请及时调整关停或止损！")
+                render_section_header_and_table(
+                    warning_table_df, 
+                    "🚨 连续低效/衰退预警剧目全量透视表 (满足连续2天<60% / 3天<73% / 4天<78%)", 
+                    key_prefix="warn_dr_single_table"
+                )
+        else:
+            st.success("🎉 当前筛选范围内暂无符合连续低效（2天<60% / 3天<73% / 4天<78%）的预警剧目，整体大盘健康度良好！")
         st.markdown("---")
 
     # ==================== 🎯 【单剧集/短ID 深度透视板块】 ====================
@@ -337,7 +455,7 @@ if uploaded_file is not None:
             deep_df, *_ = build_summary_pivot(filtered_df, deep_pivot_cols)
             render_section_header_and_table(deep_df, "📌 6. 广告层级细分全量深度透视", key_prefix="s6")
 
-        # 🔥【新增 6.2】：广告层级全量多维细分透视 (平台x账户x目标x方式x出价x类型)
+        # 6.2 广告层级全量多维细分透视 (平台x账户x目标x方式x出价x类型)
         full_deep_cols = [c for c in [col_platform, col_account, col_target, col_opt_mode, col_bid, col_ad_type] if c]
         if len(full_deep_cols) >= 3:
             full_deep_df, *_ = build_summary_pivot(filtered_df, full_deep_cols)
